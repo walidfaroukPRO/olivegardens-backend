@@ -8,26 +8,65 @@ dotenv.config();
 
 const app = express();
 
+// ========================================
+// CORS CONFIGURATION (مهم جداً!)
+// ========================================
+const corsOptions = {
+  origin: function (origin, callback) {
+    // السماح بالـ domains التالية
+    const allowedOrigins = [
+      'http://localhost:3000',
+      'http://localhost:5173',
+      'http://localhost:5174',
+      'https://olivegardens-frontend.vercel.app', // استبدله بـ domain Vercel الفعلي
+      'https://olivegardens-frontend-650rbbfi5-olivegardens11s-projects.vercel.app',
+      process.env.CLIENT_URL, // من .env
+    ].filter(Boolean); // إزالة null/undefined
+
+    // السماح بـ requests بدون origin (مثل Postman)
+    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+  optionsSuccessStatus: 200,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+};
+
+app.use(cors(corsOptions));
+
 // Middleware
-app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// MongoDB Connection
-mongoose.connect(process.env.MONGODB_URI, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-})
-.then(() => {
-  console.log('✅ MongoDB Connected');
-})
-.catch(err => {
-  console.error('❌ MongoDB Error:', err.message);
-  process.exit(1);
-});
+// ========================================
+// DATABASE CONNECTION
+// ========================================
+const connectDB = async () => {
+  try {
+    const conn = await mongoose.connect(process.env.MONGODB_URI, {
+      useNewUrlParser: true,
+      useUnifiedTopology: true,
+      serverSelectionTimeoutMS: 5000,
+    });
+    console.log('✅ MongoDB Connected Successfully');
+    console.log(`📊 Database: ${conn.connection.name}`);
+    console.log(`🌐 Host: ${conn.connection.host}`);
+  } catch (error) {
+    console.error('❌ MongoDB Connection Error:', error.message);
+    process.exit(1);
+  }
+};
 
-// Routes
+connectDB();
+
+// ========================================
+// ROUTES
+// ========================================
 const authRoutes = require('./routes/auth');
 const productRoutes = require('./routes/products');
 const galleryRoutes = require('./routes/gallery');
@@ -42,41 +81,69 @@ app.use('/api/contact', contactRoutes);
 app.use('/api/content', contentRoutes);
 app.use('/api/users', usersRoutes);
 
-// Health Check
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'OK', message: 'Server is running' });
+// ========================================
+// HEALTH CHECK
+// ========================================
+app.get('/', (req, res) => {
+  res.json({ 
+    message: '🫒 OliveGardens API',
+    status: 'running',
+    version: '1.0.0'
+  });
 });
 
-// Error Handler
-app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(500).json({ 
-    success: false,
-    message: 'Something went wrong!', 
-    error: err.message 
+app.get('/api/health', (req, res) => {
+  res.json({ 
+    status: 'OK', 
+    message: 'Server is running',
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || 'development'
   });
 });
 
 // ========================================
-// PORT HANDLING WITH AUTO-INCREMENT
+// 404 HANDLER
 // ========================================
+app.use((req, res) => {
+  res.status(404).json({ 
+    success: false,
+    message: 'Route not found',
+    path: req.originalUrl
+  });
+});
 
+// ========================================
+// ERROR HANDLER
+// ========================================
+app.use((err, req, res, next) => {
+  console.error('❌ Error:', err.stack);
+  
+  res.status(err.status || 500).json({ 
+    success: false,
+    message: err.message || 'Internal Server Error',
+    ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
+  });
+});
+
+// ========================================
+// PORT HANDLING
+// ========================================
 const PORT = process.env.PORT || 5000;
 
 const startServer = (port) => {
-  const server = app.listen(port, () => {
+  const server = app.listen(port, '0.0.0.0', () => {
     console.log('\n🚀 ========================================');
     console.log(`🚀 Server running on port ${port}`);
     console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
     console.log(`📁 Static files: ${path.join(__dirname, 'uploads')}`);
-    console.log(`🔗 API: http://localhost:${port}/api`);
+    console.log(`🔗 Local: http://localhost:${port}`);
     console.log(`💚 Health: http://localhost:${port}/api/health`);
     console.log('🚀 ========================================\n');
   })
   .on('error', (err) => {
     if (err.code === 'EADDRINUSE') {
       console.log(`⚠️  Port ${port} is busy, trying ${port + 1}...`);
-      startServer(port + 1); // Try next port
+      startServer(port + 1);
     } else {
       console.error('❌ Server Error:', err);
       process.exit(1);
@@ -84,8 +151,8 @@ const startServer = (port) => {
   });
 
   // Graceful Shutdown
-  process.on('SIGTERM', () => {
-    console.log('👋 SIGTERM received. Shutting down gracefully...');
+  const shutdown = (signal) => {
+    console.log(`\n👋 ${signal} received. Shutting down gracefully...`);
     server.close(() => {
       console.log('✅ Server closed');
       mongoose.connection.close(false, () => {
@@ -93,18 +160,10 @@ const startServer = (port) => {
         process.exit(0);
       });
     });
-  });
+  };
 
-  process.on('SIGINT', () => {
-    console.log('\n👋 SIGINT received. Shutting down gracefully...');
-    server.close(() => {
-      console.log('✅ Server closed');
-      mongoose.connection.close(false, () => {
-        console.log('✅ MongoDB connection closed');
-        process.exit(0);
-      });
-    });
-  });
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 };
 
 startServer(PORT);
