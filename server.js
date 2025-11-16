@@ -19,7 +19,7 @@ const corsOptions = {
       'http://localhost:5173',
       'http://localhost:5174',
       'https://olivegardens-frontend.vercel.app', // استبدله بـ domain Vercel الفعلي
-      'https://olivegardens-frontend-650rbbfi5-olivegardens11s-projects.vercel.app',
+      'https://olivegardens-frontend-hg9dm1gsv-olivegardens11s-projects.vercel.app',
       process.env.CLIENT_URL, // من .env
     ].filter(Boolean); // إزالة null/undefined
 
