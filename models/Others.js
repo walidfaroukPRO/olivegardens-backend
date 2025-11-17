@@ -1,99 +1,108 @@
 const mongoose = require('mongoose');
 
-// Gallery Model
-const gallerySchema = new mongoose.Schema({
-  title: {
-    en: String,
-    ar: String
-  },
-  description: {
-    en: String,
-    ar: String
-  },
-  image: {
-    type: String,
-    required: true
-  },
-  category: {
-    type: String,
-    enum: ['factory', 'products', 'certifications', 'events', 'other'],
-    default: 'other'
-  },
-  order: {
-    type: Number,
-    default: 0
-  },
-  isActive: {
-    type: Boolean,
-    default: true
-  },
-  createdAt: {
-    type: Date,
-    default: Date.now
-  }
-});
-
-// Contact/Inquiry Model
+// ========================================
+// CONTACT/INQUIRY MODEL
+// ========================================
 const contactSchema = new mongoose.Schema({
   name: {
     type: String,
-    required: true
+    required: [true, 'Name is required'],
+    trim: true
   },
   email: {
     type: String,
-    required: true
+    required: [true, 'Email is required'],
+    trim: true,
+    lowercase: true,
+    match: [/^\S+@\S+\.\S+$/, 'Please provide a valid email']
   },
-  phone: String,
-  company: String,
+  phone: {
+    type: String,
+    trim: true
+  },
+  company: {
+    type: String,
+    trim: true
+  },
   subject: {
     type: String,
-    required: true
+    required: [true, 'Subject is required'],
+    trim: true
   },
   message: {
     type: String,
-    required: true
+    required: [true, 'Message is required']
   },
   inquiryType: {
     type: String,
-    enum: ['general', 'quotation', 'partnership', 'complaint', 'other'],
+    enum: ['general', 'quotation', 'partnership', 'complaint', 'sales', 'support', 'other'],
     default: 'general'
   },
   status: {
     type: String,
-    enum: ['new', 'read', 'replied', 'closed'],
+    enum: ['new', 'read', 'replied', 'closed', 'archived'],
     default: 'new'
-  },
-  createdAt: {
-    type: Date,
-    default: Date.now
   }
+}, {
+  timestamps: true
 });
 
-// Slideshow/Hero Model
+// Indexes for better performance
+contactSchema.index({ status: 1, createdAt: -1 });
+contactSchema.index({ email: 1 });
+
+// ========================================
+// SLIDESHOW/HERO MODEL
+// ========================================
 const slideSchema = new mongoose.Schema({
   title: {
     en: {
       type: String,
-      required: true
+      required: [true, 'English title is required'],
+      trim: true
     },
     ar: {
       type: String,
-      required: true
+      required: [true, 'Arabic title is required'],
+      trim: true
+    },
+    es: {
+      type: String,
+      trim: true
     }
   },
   subtitle: {
-    en: String,
-    ar: String
+    en: {
+      type: String,
+      trim: true
+    },
+    ar: {
+      type: String,
+      trim: true
+    },
+    es: {
+      type: String,
+      trim: true
+    }
   },
   image: {
-    type: String,
-    required: true
+    url: {
+      type: String,
+      required: true
+    },
+    publicId: {
+      type: String
+    }
   },
   buttonText: {
     en: String,
-    ar: String
+    ar: String,
+    es: String
   },
-  buttonLink: String,
+  buttonLink: {
+    type: String,
+    trim: true
+  },
   order: {
     type: Number,
     default: 0
@@ -102,14 +111,25 @@ const slideSchema = new mongoose.Schema({
     type: Boolean,
     default: true
   },
-  createdAt: {
-    type: Date,
-    default: Date.now
+  createdBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
   }
+}, {
+  timestamps: true
 });
 
-const Gallery = mongoose.model('Gallery', gallerySchema);
+// Indexes
+slideSchema.index({ order: 1, isActive: 1 });
+
+// ========================================
+// EXPORTS
+// ========================================
+// ⚠️ لا تعمل export للـ Gallery - موجود في models/Gallery.js
 const Contact = mongoose.model('Contact', contactSchema);
 const Slide = mongoose.model('Slide', slideSchema);
 
-module.exports = { Gallery, Contact, Slide };
+module.exports = { 
+  Contact, 
+  Slide 
+};
