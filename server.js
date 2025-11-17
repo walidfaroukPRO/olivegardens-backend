@@ -9,26 +9,25 @@ dotenv.config();
 const app = express();
 
 // ========================================
-// CORS CONFIGURATION
+// CORS CONFIGURATION (مهم جداً!)
 // ========================================
 const corsOptions = {
   origin: function (origin, callback) {
+    // السماح بالـ domains التالية
     const allowedOrigins = [
       'http://localhost:3000',
       'http://localhost:5173',
       'http://localhost:5174',
-      'https://olivegardens-frontend.vercel.app',
+      'https://olivegardens-frontend.vercel.app', // استبدله بـ domain Vercel الفعلي
       'https://olivegardens-frontend-hg9dm1gsv-olivegardens11s-projects.vercel.app',
-      process.env.CLIENT_URL,
-      process.env.CLIENT_URL_PRODUCTION,
-    ].filter(Boolean);
+      process.env.CLIENT_URL, // من .env
+    ].filter(Boolean); // إزالة null/undefined
 
-    // السماح بـ requests بدون origin (Postman, Mobile apps, etc)
+    // السماح بـ requests بدون origin (مثل Postman)
     if (!origin || allowedOrigins.indexOf(origin) !== -1) {
       callback(null, true);
     } else {
-      console.warn('⚠️ CORS blocked origin:', origin);
-      callback(null, true); // Allow anyway in production (or use: callback(new Error('Not allowed by CORS')))
+      callback(new Error('Not allowed by CORS'));
     }
   },
   credentials: true,
@@ -42,48 +41,23 @@ app.use(cors(corsOptions));
 // Middleware
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-
-// Static files (NOT NEEDED with Cloudinary, but keep for backward compatibility)
-// app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // ========================================
 // DATABASE CONNECTION
 // ========================================
 const connectDB = async () => {
   try {
-    mongoose.set('strictQuery', false);
-    
     const conn = await mongoose.connect(process.env.MONGODB_URI, {
       useNewUrlParser: true,
       useUnifiedTopology: true,
       serverSelectionTimeoutMS: 5000,
-      socketTimeoutMS: 45000,
     });
-    
     console.log('✅ MongoDB Connected Successfully');
     console.log(`📊 Database: ${conn.connection.name}`);
     console.log(`🌐 Host: ${conn.connection.host}`);
-    console.log(`⚡ Connection State: ${conn.connection.readyState === 1 ? 'Connected' : 'Disconnected'}`);
-
-    // Connection events
-    mongoose.connection.on('disconnected', () => {
-      console.log('❌ MongoDB disconnected');
-    });
-
-    mongoose.connection.on('error', (err) => {
-      console.error('❌ MongoDB error:', err);
-    });
-
-    mongoose.connection.on('reconnected', () => {
-      console.log('✅ MongoDB reconnected');
-    });
-
   } catch (error) {
     console.error('❌ MongoDB Connection Error:', error.message);
-    console.log('\n🔧 Troubleshooting:');
-    console.log('1. Check MongoDB Atlas Network Access');
-    console.log('2. Verify MONGODB_URI in environment variables');
-    console.log('3. Ensure cluster is active\n');
     process.exit(1);
   }
 };
@@ -114,9 +88,7 @@ app.get('/', (req, res) => {
   res.json({ 
     message: '🫒 OliveGardens API',
     status: 'running',
-    version: '1.0.0',
-    environment: process.env.NODE_ENV || 'development',
-    cloudinary: process.env.CLOUDINARY_CLOUD_NAME ? 'Connected' : 'Not configured'
+    version: '1.0.0'
   });
 });
 
@@ -125,9 +97,7 @@ app.get('/api/health', (req, res) => {
     status: 'OK', 
     message: 'Server is running',
     timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'development',
-    database: mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected',
-    cloudinary: process.env.CLOUDINARY_CLOUD_NAME ? 'Configured' : 'Not configured'
+    environment: process.env.NODE_ENV || 'development'
   });
 });
 
@@ -146,23 +116,7 @@ app.use((req, res) => {
 // ERROR HANDLER
 // ========================================
 app.use((err, req, res, next) => {
-  console.error('❌ Error:', err.message);
-  
-  // Handle Multer errors
-  if (err.name === 'MulterError') {
-    if (err.code === 'LIMIT_FILE_SIZE') {
-      return res.status(400).json({
-        success: false,
-        message: 'File size too large. Maximum size is 5MB'
-      });
-    }
-    if (err.code === 'LIMIT_FILE_COUNT') {
-      return res.status(400).json({
-        success: false,
-        message: 'Too many files uploaded'
-      });
-    }
-  }
+  console.error('❌ Error:', err.stack);
   
   res.status(err.status || 500).json({ 
     success: false,
@@ -181,10 +135,9 @@ const startServer = (port) => {
     console.log('\n🚀 ========================================');
     console.log(`🚀 Server running on port ${port}`);
     console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`☁️  Cloudinary: ${process.env.CLOUDINARY_CLOUD_NAME || 'Not configured'}`);
+    console.log(`📁 Static files: ${path.join(__dirname, 'uploads')}`);
     console.log(`🔗 Local: http://localhost:${port}`);
     console.log(`💚 Health: http://localhost:${port}/api/health`);
-    console.log(`🌐 API Docs: http://localhost:${port}/`);
     console.log('🚀 ========================================\n');
   })
   .on('error', (err) => {
@@ -211,11 +164,6 @@ const startServer = (port) => {
 
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
-  
-  process.on('unhandledRejection', (err) => {
-    console.error('❌ Unhandled Rejection:', err);
-    server.close(() => process.exit(1));
-  });
 };
 
 startServer(PORT);
