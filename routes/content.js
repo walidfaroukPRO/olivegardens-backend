@@ -1,24 +1,8 @@
 const express = require('express');
 const router = express.Router();
-const multer = require('multer');
-const path = require('path');
 const Content = require('../models/Content');
 const { authenticateToken, isAdmin } = require('./auth');
-
-// File Upload Configuration
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, 'uploads/content/');
-  },
-  filename: function (req, file, cb) {
-    cb(null, Date.now() + '-' + file.originalname);
-  }
-});
-
-const upload = multer({ 
-  storage: storage,
-  limits: { fileSize: 5 * 1024 * 1024 }
-});
+const { upload, cloudinary } = require('../config/cloudinary');
 
 // Get Content by Section (Public)
 router.get('/:section', async (req, res) => {
@@ -45,16 +29,17 @@ router.get('/', authenticateToken, isAdmin, async (req, res) => {
   }
 });
 
-// Update Hero Section (Admin)
-router.put('/hero', authenticateToken, isAdmin, upload.array('images'), async (req, res) => {
+// Update Hero Section (Admin) - With Cloudinary
+router.put('/hero', authenticateToken, isAdmin, upload.array('images', 10), async (req, res) => {
   try {
     const heroData = JSON.parse(req.body.heroData);
     
-    // Add uploaded images if any
+    // Add uploaded images from Cloudinary if any
     if (req.files && req.files.length > 0) {
       req.files.forEach((file, index) => {
         if (heroData.heroSlides[index]) {
-          heroData.heroSlides[index].image = `/uploads/content/${file.filename}`;
+          heroData.heroSlides[index].image = file.path; // Cloudinary URL
+          heroData.heroSlides[index].publicId = file.filename;
         }
       });
     }
@@ -78,13 +63,14 @@ router.put('/hero', authenticateToken, isAdmin, upload.array('images'), async (r
   }
 });
 
-// Update About Section (Admin)
+// Update About Section (Admin) - With Cloudinary
 router.put('/about', authenticateToken, isAdmin, upload.single('image'), async (req, res) => {
   try {
     const aboutData = JSON.parse(req.body.aboutData);
     
     if (req.file) {
-      aboutData.about.image = `/uploads/content/${req.file.filename}`;
+      aboutData.about.image = req.file.path; // Cloudinary URL
+      aboutData.about.publicId = req.file.filename;
     }
     
     aboutData.updatedBy = req.user.userId;
@@ -159,13 +145,14 @@ router.put('/contact-info', authenticateToken, isAdmin, async (req, res) => {
   }
 });
 
-// Update Company Info (Admin)
+// Update Company Info (Admin) - With Cloudinary
 router.put('/company-info', authenticateToken, isAdmin, upload.single('logo'), async (req, res) => {
   try {
     const companyData = JSON.parse(req.body.companyData);
     
     if (req.file) {
-      companyData.logo = `/uploads/content/${req.file.filename}`;
+      companyData.logo = req.file.path; // Cloudinary URL
+      companyData.logoPublicId = req.file.filename;
     }
     
     let content = await Content.findOne({ section: 'footer' });
@@ -198,7 +185,7 @@ router.post('/initialize', authenticateToken, isAdmin, async (req, res) => {
       return res.status(400).json({ message: 'Content already initialized' });
     }
     
-    // Create default content
+    // Create default content with Cloudinary URLs (or placeholder URLs)
     const defaultContent = [
       {
         section: 'hero',
@@ -235,9 +222,9 @@ router.post('/initialize', authenticateToken, isAdmin, async (req, res) => {
             es: "Sobre OliveGardens"
           },
           story: {
-            en: "OliveGardens Co. for production and agricultural manufacture S.A.E. was established on 1980 and The Company had turned from individual to Egyptian Contribution Company and had become one of the international companies in olive production quantity & quality From this changing our company had the ability to open new markets and it had attended a noticeable expansion in increasing investment to be one of the largest companies in olive production locally and international With the increasing in needs and demands of the various clients and markets all over the world, Olivee Company had participated with the countries that product olive which consider the greatest in olive production all over the world, as the company worked in increasing its production and its clear expansion in this field We have the latest technological and mechanical ways in our factories",
-            ar: "تأسست شركة OliveGardens للإنتاج والتصنيع الزراعي في عام 1980، وتحولت الشركة من فردية إلى شركة مساهمة مصرية وأصبحت واحدة من الشركات الدولية في إنتاج الزيتون من حيث الكمية والجودة. من خلال هذا التغيير، أصبح لدى شركتنا القدرة على فتح أسواق جديدة وشهدت توسعاً ملحوظاً في زيادة الاستثمار لتصبح واحدة من أكبر الشركات في إنتاج الزيتون محلياً ودولياً. مع تزايد احتياجات ومتطلبات مختلف العملاء والأسواق في جميع أنحاء العالم، شاركت شركة Olivee مع الدول المنتجة للزيتون والتي تعتبر الأكبر في إنتاج الزيتون في جميع أنحاء العالم، حيث عملت الشركة على زيادة إنتاجها وتوسعها الواضح في هذا المجال. لدينا أحدث الطرق التكنولوجية والميكانيكية في مصانعنا",
-            es: "OliveGardens Co. para producción y manufactura agrícola S.A.E. fue establecida en 1980 y la Compañía pasó de ser individual a Compañía de Contribución Egipcia y se convirtió en una de las compañías internacionales en producción de aceitunas en cantidad y calidad. De este cambio, nuestra compañía tuvo la capacidad de abrir nuevos mercados y experimentó una expansión notable en el aumento de inversiones para convertirse en una de las compañías más grandes en producción de aceitunas a nivel local e internacional. Con el aumento de necesidades y demandas de varios clientes y mercados en todo el mundo, Olivee Company ha participado con países productores de aceitunas que se consideran los más grandes en producción de aceitunas en todo el mundo, ya que la compañía trabajó en aumentar su producción y su clara expansión en este campo. Tenemos las últimas formas tecnológicas y mecánicas en nuestras fábricas"
+            en: "OliveGardens Co. for production and agricultural manufacture S.A.E. was established on 1980...",
+            ar: "تأسست شركة OliveGardens للإنتاج والتصنيع الزراعي في عام 1980...",
+            es: "OliveGardens Co. para producción y manufactura agrícola S.A.E. fue establecida en 1980..."
           },
           foundedYear: "1980",
           companyType: {

@@ -1,51 +1,15 @@
 const express = require('express');
 const router = express.Router();
-const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
-
-// Ensure upload directory exists
-const uploadDir = path.join(__dirname, '../uploads/gallery');
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-  console.log('✅ Gallery upload directory created');
-}
-
-// File Upload Configuration
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, uploadDir);
-  },
-  filename: function (req, file, cb) {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, uniqueSuffix + path.extname(file.originalname));
-  }
-});
-
-const upload = multer({ 
-  storage: storage,
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
-  fileFilter: (req, file, cb) => {
-    const allowedTypes = /jpeg|jpg|png|gif|webp/;
-    const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
-    const mimetype = allowedTypes.test(file.mimetype);
-    
-    if (mimetype && extname) {
-      return cb(null, true);
-    } else {
-      cb(new Error('Only images are allowed'));
-    }
-  }
-});
-
-// Simple in-memory storage (replace with MongoDB later)
-let galleryItems = [];
+const Gallery = require('../models/Gallery');
+const { upload, cloudinary } = require('../config/cloudinary');
+const { authenticateToken, isAdmin } = require('./auth');
 
 // @route   GET /api/gallery
 // @desc    Get all gallery images
 // @access  Public
 router.get('/', async (req, res) => {
   try {
+    const galleryItems = await Gallery.find({ isActive: true }).sort({ order: 1, createdAt: -1 });
     res.json(galleryItems);
   } catch (error) {
     console.error('Get gallery error:', error);
@@ -58,9 +22,9 @@ router.get('/', async (req, res) => {
 });
 
 // @route   POST /api/gallery
-// @desc    Upload gallery images (Admin only)
+// @desc    Upload gallery images (Admin only) - With Cloudinary
 // @access  Private/Admin
-router.post('/', upload.array('images', 10), async (req, res) => {
+router.post('/', authenticateToken, isAdmin, upload.array('images', 10), async (req, res) => {
   try {
     console.log('📸 Upload request received');
     console.log('Files:', req.files ? req.files.length : 0);
@@ -75,20 +39,20 @@ router.post('/', upload.array('images', 10), async (req, res) => {
     const newItems = [];
 
     for (const file of req.files) {
-      const galleryItem = {
-        _id: Date.now() + '-' + Math.random().toString(36).substr(2, 9),
+      const galleryItem = new Gallery({
         title: { en: '', ar: '', es: '' },
         description: { en: '', ar: '', es: '' },
-        imageUrl: `/uploads/gallery/${file.filename}`,
+        imageUrl: file.path, // Cloudinary URL
+        publicId: file.filename, // Cloudinary public ID
         category: 'general',
         order: 0,
         isActive: true,
-        createdAt: new Date()
-      };
+        uploadedBy: req.user.userId
+      });
       
-      galleryItems.push(galleryItem);
+      await galleryItem.save();
       newItems.push(galleryItem);
-      console.log('✅ Added:', file.filename);
+      console.log('✅ Uploaded to Cloudinary:', file.filename);
     }
     
     console.log(`✅ Successfully uploaded ${newItems.length} image(s)`);
@@ -108,33 +72,68 @@ router.post('/', upload.array('images', 10), async (req, res) => {
   }
 });
 
-// @route   DELETE /api/gallery/:id
-// @desc    Delete gallery image (Admin only)
+// @route   PUT /api/gallery/:id
+// @desc    Update gallery image info
 // @access  Private/Admin
-router.delete('/:id', async (req, res) => {
+router.put('/:id', authenticateToken, isAdmin, async (req, res) => {
   try {
-    const index = galleryItems.findIndex(item => item._id === req.params.id);
+    const { title, description, category, order, isActive } = req.body;
     
-    if (index === -1) {
+    const galleryItem = await Gallery.findByIdAndUpdate(
+      req.params.id,
+      { title, description, category, order, isActive },
+      { new: true, runValidators: true }
+    );
+    
+    if (!galleryItem) {
+      return res.status(404).json({ 
+        success: false,
+        message: 'Gallery item not found' 
+      });
+    }
+    
+    res.json({
+      success: true,
+      message: 'Gallery item updated successfully',
+      item: galleryItem
+    });
+  } catch (error) {
+    console.error('❌ Update gallery error:', error);
+    res.status(500).json({ 
+      success: false,
+      message: 'Failed to update gallery item', 
+      error: error.message 
+    });
+  }
+});
+
+// @route   DELETE /api/gallery/:id
+// @desc    Delete gallery image (Admin only) - Delete from Cloudinary
+// @access  Private/Admin
+router.delete('/:id', authenticateToken, isAdmin, async (req, res) => {
+  try {
+    const galleryItem = await Gallery.findById(req.params.id);
+    
+    if (!galleryItem) {
       return res.status(404).json({ 
         success: false,
         message: 'Gallery item not found' 
       });
     }
 
-    // Get file path
-    const item = galleryItems[index];
-    const filename = path.basename(item.imageUrl);
-    const filePath = path.join(uploadDir, filename);
-    
-    // Delete file from filesystem
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-      console.log('🗑️ Deleted file:', filename);
+    // Delete from Cloudinary
+    if (galleryItem.publicId) {
+      try {
+        await cloudinary.uploader.destroy(galleryItem.publicId);
+        console.log('🗑️ Deleted from Cloudinary:', galleryItem.publicId);
+      } catch (cloudinaryError) {
+        console.error('⚠️ Cloudinary deletion error:', cloudinaryError);
+        // Continue with database deletion even if Cloudinary fails
+      }
     }
 
-    // Remove from array
-    galleryItems.splice(index, 1);
+    // Remove from database
+    await galleryItem.deleteOne();
     
     res.json({ 
       success: true,

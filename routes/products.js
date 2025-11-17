@@ -1,35 +1,8 @@
 const express = require('express');
 const router = express.Router();
-const multer = require('multer');
-const path = require('path');
 const Product = require('../models/Product');
 const { authenticateToken, isAdmin } = require('./auth');
-
-// File Upload Configuration
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, 'uploads/products/');
-  },
-  filename: function (req, file, cb) {
-    cb(null, Date.now() + '-' + file.originalname);
-  }
-});
-
-const upload = multer({ 
-  storage: storage,
-  limits: { fileSize: 5 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
-    const allowedTypes = /jpeg|jpg|png|gif|webp/;
-    const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
-    const mimetype = allowedTypes.test(file.mimetype);
-    
-    if (mimetype && extname) {
-      return cb(null, true);
-    } else {
-      cb(new Error('Only images are allowed'));
-    }
-  }
-});
+const { upload, cloudinary } = require('../config/cloudinary');
 
 // Get All Products (Public)
 router.get('/', async (req, res) => {
@@ -60,14 +33,17 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// Create Product (Admin Only)
+// Create Product (Admin Only) - With Cloudinary
 router.post('/', authenticateToken, isAdmin, upload.array('images', 5), async (req, res) => {
   try {
     const productData = JSON.parse(req.body.productData);
     
-    // Add uploaded image paths
+    // Add uploaded image paths from Cloudinary
     if (req.files && req.files.length > 0) {
-      productData.images = req.files.map(file => `/uploads/products/${file.filename}`);
+      productData.images = req.files.map(file => ({
+        url: file.path,
+        publicId: file.filename
+      }));
     }
     
     productData.createdBy = req.user.userId;
@@ -84,14 +60,17 @@ router.post('/', authenticateToken, isAdmin, upload.array('images', 5), async (r
   }
 });
 
-// Update Product (Admin Only)
+// Update Product (Admin Only) - With Cloudinary
 router.put('/:id', authenticateToken, isAdmin, upload.array('images', 5), async (req, res) => {
   try {
     const productData = JSON.parse(req.body.productData);
     
-    // Add new uploaded images if any
+    // Add new uploaded images from Cloudinary if any
     if (req.files && req.files.length > 0) {
-      const newImages = req.files.map(file => `/uploads/products/${file.filename}`);
+      const newImages = req.files.map(file => ({
+        url: file.path,
+        publicId: file.filename
+      }));
       productData.images = [...(productData.images || []), ...newImages];
     }
     
@@ -114,14 +93,30 @@ router.put('/:id', authenticateToken, isAdmin, upload.array('images', 5), async 
   }
 });
 
-// Delete Product (Admin Only)
+// Delete Product (Admin Only) - Delete from Cloudinary
 router.delete('/:id', authenticateToken, isAdmin, async (req, res) => {
   try {
-    const product = await Product.findByIdAndDelete(req.params.id);
+    const product = await Product.findById(req.params.id);
     
     if (!product) {
       return res.status(404).json({ message: 'Product not found' });
     }
+    
+    // Delete all images from Cloudinary
+    if (product.images && product.images.length > 0) {
+      for (const image of product.images) {
+        if (image.publicId) {
+          try {
+            await cloudinary.uploader.destroy(image.publicId);
+            console.log('🗑️ Deleted from Cloudinary:', image.publicId);
+          } catch (cloudinaryError) {
+            console.error('⚠️ Cloudinary deletion error:', cloudinaryError);
+          }
+        }
+      }
+    }
+    
+    await product.deleteOne();
     
     res.json({ message: 'Product deleted successfully' });
   } catch (error) {
