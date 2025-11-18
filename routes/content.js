@@ -1,26 +1,296 @@
 const express = require('express');
 const router = express.Router();
 const Content = require('../models/Content');
-const { authenticateToken, isAdmin } = require('./auth');
-const { upload, cloudinary } = require('../config/cloudinary');
+const { authenticateToken, isAdmin } = require('../middleware/auth');
 
-// Get Content by Section (Public)
-router.get('/:section', async (req, res) => {
+// ===== PUBLIC ROUTES =====
+
+// Get Hero Content
+router.get('/hero', async (req, res) => {
   try {
-    const content = await Content.findOne({ section: req.params.section });
+    let content = await Content.findOne({ section: 'hero' });
     
     if (!content) {
-      return res.status(404).json({ message: 'Content not found' });
+      content = await Content.create({
+        section: 'hero',
+        heroSlides: [{
+          title: { en: '', ar: '', es: '' },
+          subtitle: { en: '', ar: '', es: '' },
+          buttonText: { en: '', ar: '', es: '' },
+          buttonLink: '',
+          image: '',
+          order: 1,
+          isActive: true
+        }]
+      });
     }
-    
+
     res.json(content);
   } catch (error) {
-    res.status(500).json({ message: 'Failed to fetch content', error: error.message });
+    console.error('Error fetching hero:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// Get About Content
+router.get('/about', async (req, res) => {
+  try {
+    let content = await Content.findOne({ section: 'about' });
+    
+    if (!content) {
+      content = await Content.create({
+        section: 'about',
+        about: {
+          title: { en: '', ar: '', es: '' },
+          story: { en: '', ar: '', es: '' },
+          mission: { en: '', ar: '', es: '' },
+          vision: { en: '', ar: '', es: '' },
+          foundedYear: '1980',
+          companyType: { en: '', ar: '', es: '' },
+          image: ''
+        },
+        stats: [
+          { number: '50+', label: { en: 'Countries Served', ar: 'دولة نخدمها', es: 'Países Servidos' }, icon: '🌍' },
+          { number: '44+', label: { en: 'Years Experience', ar: 'سنة خبرة', es: 'Años de Experiencia' }, icon: '⭐' }
+        ]
+      });
+    }
+
+    res.json(content);
+  } catch (error) {
+    console.error('Error fetching about:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// Get Contact Info
+router.get('/contact-info', async (req, res) => {
+  try {
+    let content = await Content.findOne({ section: 'contact-info' });
+    
+    if (!content) {
+      content = await Content.create({
+        section: 'contact-info',
+        contactInfo: {
+          phone: '+20 123 456 7890',
+          email: 'info@olivegardens.com',
+          address: { en: 'Cairo, Egypt', ar: 'القاهرة، مصر', es: 'El Cairo, Egipto' },
+          workingHours: { en: 'Sat-Thu: 9AM-6PM', ar: 'السبت-الخميس: 9ص-6م', es: 'Sáb-Jue: 9AM-6PM' },
+          social: {
+            facebook: 'https://facebook.com/olivegardens',
+            twitter: 'https://twitter.com/olivegardens',
+            instagram: 'https://instagram.com/olivegardens',
+            linkedin: 'https://linkedin.com/company/olivegardens'
+          }
+        }
+      });
+    }
+
+    res.json(content);
+  } catch (error) {
+    console.error('Error fetching contact info:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// Get Company Info (Footer)
+router.get('/footer', async (req, res) => {
+  try {
+    let content = await Content.findOne({ section: 'footer' });
+    
+    if (!content) {
+      content = await Content.create({
+        section: 'footer',
+        companyInfo: {
+          name: { en: 'OliveGardens', ar: 'OliveGardens', es: 'OliveGardens' },
+          shortDescription: {
+            en: 'Premium quality olive products since 1980',
+            ar: 'منتجات زيتون عالية الجودة منذ 1980',
+            es: 'Productos de aceituna premium desde 1980'
+          },
+          logo: ''
+        }
+      });
+    }
+
+    res.json(content);
+  } catch (error) {
+    console.error('Error fetching company info:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// Get Features
+router.get('/features', async (req, res) => {
+  try {
+    let content = await Content.findOne({ section: 'features' });
+    
+    if (!content) {
+      content = await Content.create({
+        section: 'features',
+        features: []
+      });
+    }
+
+    res.json(content);
+  } catch (error) {
+    console.error('Error fetching features:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// ===== ADMIN ROUTES =====
+
+// Update Hero Section
+router.put('/hero', authenticateToken, isAdmin, async (req, res) => {
+  try {
+    const { heroSlides } = req.body;
+
+    if (!heroSlides || !Array.isArray(heroSlides)) {
+      return res.status(400).json({ message: 'Invalid heroSlides data' });
+    }
+
+    let content = await Content.findOne({ section: 'hero' });
+
+    if (!content) {
+      content = new Content({
+        section: 'hero',
+        heroSlides: heroSlides,
+        updatedBy: req.user._id
+      });
+    } else {
+      content.heroSlides = heroSlides;
+      content.updatedBy = req.user._id;
+    }
+
+    await content.save();
+    res.json({ message: 'Hero section updated successfully', content });
+  } catch (error) {
+    console.error('Error updating hero:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// Update About Section
+router.put('/about', authenticateToken, isAdmin, async (req, res) => {
+  try {
+    const { about, stats } = req.body;
+
+    if (!about) {
+      return res.status(400).json({ message: 'Invalid about data' });
+    }
+
+    let content = await Content.findOne({ section: 'about' });
+
+    if (!content) {
+      content = new Content({
+        section: 'about',
+        about: about,
+        stats: stats || [],
+        updatedBy: req.user._id
+      });
+    } else {
+      content.about = about;
+      if (stats) content.stats = stats;
+      content.updatedBy = req.user._id;
+    }
+
+    await content.save();
+    res.json({ message: 'About section updated successfully', content });
+  } catch (error) {
+    console.error('Error updating about:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// Update Contact Info
+router.put('/contact-info', authenticateToken, isAdmin, async (req, res) => {
+  try {
+    const { contactInfo } = req.body;
+
+    if (!contactInfo) {
+      return res.status(400).json({ message: 'Invalid contact info data' });
+    }
+
+    let content = await Content.findOne({ section: 'contact-info' });
+
+    if (!content) {
+      content = new Content({
+        section: 'contact-info',
+        contactInfo: contactInfo,
+        updatedBy: req.user._id
+      });
+    } else {
+      content.contactInfo = contactInfo;
+      content.updatedBy = req.user._id;
+    }
+
+    await content.save();
+    res.json({ message: 'Contact info updated successfully', content });
+  } catch (error) {
+    console.error('Error updating contact info:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// Update Company Info
+router.put('/company-info', authenticateToken, isAdmin, async (req, res) => {
+  try {
+    const { companyInfo } = req.body;
+
+    if (!companyInfo) {
+      return res.status(400).json({ message: 'Invalid company info data' });
+    }
+
+    let content = await Content.findOne({ section: 'footer' });
+
+    if (!content) {
+      content = new Content({
+        section: 'footer',
+        companyInfo: companyInfo,
+        updatedBy: req.user._id
+      });
+    } else {
+      content.companyInfo = companyInfo;
+      content.updatedBy = req.user._id;
+    }
+
+    await content.save();
+    res.json({ message: 'Company info updated successfully', content });
+  } catch (error) {
+    console.error('Error updating company info:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// Update Features Section
+router.put('/features', authenticateToken, isAdmin, async (req, res) => {
+  try {
+    const { features } = req.body;
+
+    let content = await Content.findOne({ section: 'features' });
+
+    if (!content) {
+      content = new Content({
+        section: 'features',
+        features: features || [],
+        updatedBy: req.user._id
+      });
+    } else {
+      content.features = features || [];
+      content.updatedBy = req.user._id;
+    }
+
+    await content.save();
+    res.json({ message: 'Features updated successfully', content });
+  } catch (error) {
+    console.error('Error updating features:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
 // Get All Content Sections (Admin)
-router.get('/', authenticateToken, isAdmin, async (req, res) => {
+router.get('/admin/all', authenticateToken, isAdmin, async (req, res) => {
   try {
     const content = await Content.find();
     res.json(content);
@@ -29,163 +299,14 @@ router.get('/', authenticateToken, isAdmin, async (req, res) => {
   }
 });
 
-// Update Hero Section (Admin) - With Cloudinary
-router.put('/hero', authenticateToken, isAdmin, upload.array('images', 10), async (req, res) => {
-  try {
-    const heroData = JSON.parse(req.body.heroData);
-    
-    // Add uploaded images from Cloudinary if any
-    if (req.files && req.files.length > 0) {
-      req.files.forEach((file, index) => {
-        if (heroData.heroSlides[index]) {
-          heroData.heroSlides[index].image = file.path; // Cloudinary URL
-          heroData.heroSlides[index].publicId = file.filename;
-        }
-      });
-    }
-    
-    heroData.updatedBy = req.user.userId;
-    
-    let content = await Content.findOne({ section: 'hero' });
-    
-    if (!content) {
-      content = new Content({ section: 'hero', ...heroData });
-    } else {
-      content.heroSlides = heroData.heroSlides;
-      content.updatedBy = req.user.userId;
-    }
-    
-    await content.save();
-    
-    res.json({ message: 'Hero section updated successfully', content });
-  } catch (error) {
-    res.status(500).json({ message: 'Failed to update hero section', error: error.message });
-  }
-});
-
-// Update About Section (Admin) - With Cloudinary
-router.put('/about', authenticateToken, isAdmin, upload.single('image'), async (req, res) => {
-  try {
-    const aboutData = JSON.parse(req.body.aboutData);
-    
-    if (req.file) {
-      aboutData.about.image = req.file.path; // Cloudinary URL
-      aboutData.about.publicId = req.file.filename;
-    }
-    
-    aboutData.updatedBy = req.user.userId;
-    
-    let content = await Content.findOne({ section: 'about' });
-    
-    if (!content) {
-      content = new Content({ section: 'about', ...aboutData });
-    } else {
-      content.about = aboutData.about;
-      content.stats = aboutData.stats || content.stats;
-      content.updatedBy = req.user.userId;
-    }
-    
-    await content.save();
-    
-    res.json({ message: 'About section updated successfully', content });
-  } catch (error) {
-    res.status(500).json({ message: 'Failed to update about section', error: error.message });
-  }
-});
-
-// Update Features Section (Admin)
-router.put('/features', authenticateToken, isAdmin, async (req, res) => {
-  try {
-    const { features } = req.body;
-    
-    let content = await Content.findOne({ section: 'features' });
-    
-    if (!content) {
-      content = new Content({ 
-        section: 'features', 
-        features,
-        updatedBy: req.user.userId
-      });
-    } else {
-      content.features = features;
-      content.updatedBy = req.user.userId;
-    }
-    
-    await content.save();
-    
-    res.json({ message: 'Features updated successfully', content });
-  } catch (error) {
-    res.status(500).json({ message: 'Failed to update features', error: error.message });
-  }
-});
-
-// Update Contact Info (Admin)
-router.put('/contact-info', authenticateToken, isAdmin, async (req, res) => {
-  try {
-    const { contactInfo } = req.body;
-    
-    let content = await Content.findOne({ section: 'contact-info' });
-    
-    if (!content) {
-      content = new Content({ 
-        section: 'contact-info', 
-        contactInfo,
-        updatedBy: req.user.userId
-      });
-    } else {
-      content.contactInfo = contactInfo;
-      content.updatedBy = req.user.userId;
-    }
-    
-    await content.save();
-    
-    res.json({ message: 'Contact info updated successfully', content });
-  } catch (error) {
-    res.status(500).json({ message: 'Failed to update contact info', error: error.message });
-  }
-});
-
-// Update Company Info (Admin) - With Cloudinary
-router.put('/company-info', authenticateToken, isAdmin, upload.single('logo'), async (req, res) => {
-  try {
-    const companyData = JSON.parse(req.body.companyData);
-    
-    if (req.file) {
-      companyData.logo = req.file.path; // Cloudinary URL
-      companyData.logoPublicId = req.file.filename;
-    }
-    
-    let content = await Content.findOne({ section: 'footer' });
-    
-    if (!content) {
-      content = new Content({ 
-        section: 'footer', 
-        companyInfo: companyData,
-        updatedBy: req.user.userId
-      });
-    } else {
-      content.companyInfo = companyData;
-      content.updatedBy = req.user.userId;
-    }
-    
-    await content.save();
-    
-    res.json({ message: 'Company info updated successfully', content });
-  } catch (error) {
-    res.status(500).json({ message: 'Failed to update company info', error: error.message });
-  }
-});
-
 // Initialize Default Content (Run once)
 router.post('/initialize', authenticateToken, isAdmin, async (req, res) => {
   try {
-    // Check if content already exists
     const existingContent = await Content.findOne();
     if (existingContent) {
       return res.status(400).json({ message: 'Content already initialized' });
     }
-    
-    // Create default content with Cloudinary URLs (or placeholder URLs)
+
     const defaultContent = [
       {
         section: 'hero',
@@ -211,7 +332,8 @@ router.post('/initialize', authenticateToken, isAdmin, async (req, res) => {
             order: 1,
             isActive: true
           }
-        ]
+        ],
+        updatedBy: req.user._id
       },
       {
         section: 'about',
@@ -233,7 +355,12 @@ router.post('/initialize', authenticateToken, isAdmin, async (req, res) => {
             es: "Compañía de Contribución Egipcia (S.A.E.)"
           },
           image: "https://images.unsplash.com/photo-1474979266404-7eaacbcd87c5?w=800"
-        }
+        },
+        stats: [
+          { number: '50+', label: { en: 'Countries Served', ar: 'دولة نخدمها', es: 'Países Servidos' }, icon: '🌍', order: 1 },
+          { number: '44+', label: { en: 'Years Experience', ar: 'سنة خبرة', es: 'Años de Experiencia' }, icon: '⭐', order: 2 }
+        ],
+        updatedBy: req.user._id
       },
       {
         section: 'contact-info',
@@ -256,7 +383,8 @@ router.post('/initialize', authenticateToken, isAdmin, async (req, res) => {
             instagram: "https://instagram.com/olivegardens",
             linkedin: "https://linkedin.com/company/olivegardens"
           }
-        }
+        },
+        updatedBy: req.user._id
       },
       {
         section: 'footer',
@@ -271,14 +399,21 @@ router.post('/initialize', authenticateToken, isAdmin, async (req, res) => {
             ar: "نقدم أفضل منتجات الزيتون عالية الجودة للأسواق العالمية منذ 1980",
             es: "Proporcionando productos de aceituna de calidad premium a mercados globales desde 1980"
           }
-        }
+        },
+        updatedBy: req.user._id
+      },
+      {
+        section: 'features',
+        features: [],
+        updatedBy: req.user._id
       }
     ];
-    
+
     await Content.insertMany(defaultContent);
-    
+
     res.json({ message: 'Default content initialized successfully' });
   } catch (error) {
+    console.error('Error initializing content:', error);
     res.status(500).json({ message: 'Failed to initialize content', error: error.message });
   }
 });

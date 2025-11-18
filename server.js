@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const path = require('path');
+const uploadRoutes = require('./routes/upload'); // ✅ Add this
 
 // ✅ CRITICAL: Load environment variables FIRST
 dotenv.config();
@@ -162,6 +163,7 @@ app.use('/api/gallery', galleryRoutes);
 app.use('/api/contact', contactRoutes);
 app.use('/api/content', contentRoutes);
 app.use('/api/users', usersRoutes);
+app.use('/api/upload', uploadRoutes); // ✅ Add this
 
 // ========================================
 // HEALTH CHECK ENDPOINTS

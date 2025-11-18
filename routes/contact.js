@@ -6,7 +6,15 @@ const { authenticateToken, isAdmin } = require('./auth');
 // Submit Contact Form (Public)
 router.post('/', async (req, res) => {
   try {
-    const { name, email, phone, company, subject, message, inquiryType } = req.body;
+    const { name, email, phone, company, subject, message, inquiryType, userType } = req.body;
+    
+    // Validation
+    if (!name || !email || !subject || !message) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Please fill all required fields' 
+      });
+    }
     
     const contact = new Contact({
       name,
@@ -15,17 +23,24 @@ router.post('/', async (req, res) => {
       company,
       subject,
       message,
-      inquiryType: inquiryType || 'general'
+      inquiryType: inquiryType || 'general',
+      userType: userType || 'individual'
     });
     
     await contact.save();
     
+    // ✅ إضافة success: true
     res.status(201).json({
+      success: true,
       message: 'Your message has been sent successfully. We will contact you soon.',
       contact
     });
   } catch (error) {
-    res.status(500).json({ message: 'Failed to send message', error: error.message });
+    res.status(500).json({ 
+      success: false,
+      message: 'Failed to send message', 
+      error: error.message 
+    });
   }
 });
 
