@@ -394,9 +394,7 @@ const connectDB = async () => {
     mongoose.set('strictQuery', false);
     
     const conn = await mongoose.connect(MONGO_URI, {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
-      serverSelectionTimeoutMS: 10000,
+          serverSelectionTimeoutMS: 10000,
       socketTimeoutMS: 45000,
     });
     
