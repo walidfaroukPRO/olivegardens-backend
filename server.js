@@ -1,21 +1,322 @@
 const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
 const mongoose = require('mongoose');
 const cors = require('cors');
 const dotenv = require('dotenv');
+const geoip = require('geoip-lite');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const mongoSanitize = require('express-mongo-sanitize');
+const xss = require('xss-clean');
+const hpp = require('hpp');
 const path = require('path');
-const uploadRoutes = require('./routes/upload'); // ✅ Add this
+const uploadRoutes = require('./routes/upload');
+const categoryRoutes = require('./routes/categoryRoutes');
 
-// ✅ CRITICAL: Load environment variables FIRST
+// ✅ Load environment variables FIRST
 dotenv.config();
 
 const app = express();
+const server = http.createServer(app);
 
 // ========================================
-// CORS CONFIGURATION - Allow localhost
+// SECURITY MIDDLEWARE - CRITICAL
+// ========================================
+
+// ✅ 1. Helmet - Security Headers
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+      fontSrc: ["'self'", "https://fonts.gstatic.com"],
+      imgSrc: ["'self'", "data:", "https:", "blob:"],
+      scriptSrc: ["'self'"],
+      connectSrc: ["'self'", "https://res.cloudinary.com"],
+    },
+  },
+  crossOriginEmbedderPolicy: false,
+  crossOriginResourcePolicy: { policy: "cross-origin" }
+}));
+
+// ✅ 2. Rate Limiting - Prevent Brute Force
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 20, // 5 attempts
+  message: {
+    success: false,
+    message: 'Too many login attempts from this IP. Please try again after 15 minutes.'
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res) => {
+    console.error(`🚨 Rate limit exceeded - IP: ${req.ip} - Route: ${req.path}`);
+    res.status(429).json({
+      success: false,
+      message: 'Too many login attempts. Please try again later.',
+      retryAfter: '15 minutes'
+    });
+  }
+});
+
+// General API Rate Limiter
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // 100 requests
+  message: {
+    success: false,
+    message: 'Too many requests from this IP. Please try again later.'
+  }
+});
+
+// Strict limiter for sensitive operations
+const strictLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 10, // 10 attempts
+  message: {
+    success: false,
+    message: 'Too many attempts. Please try again in 1 hour.'
+  }
+});
+
+// ✅ 3. Data Sanitization against NoSQL Injection
+app.use(mongoSanitize({
+  replaceWith: '_',
+  onSanitize: ({ req, key }) => {
+    console.warn(`⚠️ Sanitized NoSQL injection attempt: ${key} from IP: ${req.ip}`);
+  }
+}));
+
+// ✅ 4. Data Sanitization against XSS
+app.use(xss());
+
+// ✅ 5. Prevent HTTP Parameter Pollution
+app.use(hpp());
+
+// ✅ 6. Trust Proxy (for Railway/Vercel/Render)
+app.set('trust proxy', 1);
+
+// ========================================
+// ANALYTICS MODEL
+// ========================================
+const analyticsSchema = new mongoose.Schema({
+  totalVisits: { type: Number, default: 0 },
+  uniqueVisitors: { type: Number, default: 0 },
+  pageViews: [{ page: String, count: Number }],
+  countries: [{
+    country: String,
+    countryCode: String,
+    count: Number
+  }],
+  dailyStats: [{
+    date: { type: Date, default: Date.now },
+    visits: { type: Number, default: 0 },
+    uniqueVisitors: { type: Number, default: 0 }
+  }],
+  lastUpdated: { type: Date, default: Date.now }
+}, { timestamps: true });
+
+const Analytics = mongoose.model('Analytics', analyticsSchema);
+
+// ========================================
+// SOCKET.IO CONFIGURATION
+// ========================================
+const io = new Server(server, {
+  cors: {
+    origin: function (origin, callback) {
+      if (!origin) return callback(null, true);
+
+      const allowedOrigins = [
+        'http://localhost:3000',
+        'http://localhost:5173',
+        'http://localhost:5174',
+        'http://127.0.0.1:5173',
+        'http://127.0.0.1:3000',
+        process.env.CLIENT_URL,
+        process.env.CLIENT_URL_PRODUCTION,
+      ].filter(Boolean);
+
+      if (allowedOrigins.indexOf(origin) !== -1 || 
+          (origin && origin.includes('olivegardens-frontend') && origin.includes('vercel.app'))) {
+        return callback(null, true);
+      }
+      
+      callback(null, true);
+    },
+    credentials: true,
+    methods: ['GET', 'POST']
+  }
+});
+
+let activeVisitors = new Map();
+let visitorsData = {
+  total: 0,
+  pages: {},
+  countries: {},
+  connections: []
+};
+
+const getLocationFromIP = (ip) => {
+  if (!ip || ip === '::1' || ip === '127.0.0.1' || ip.startsWith('192.168.') || ip.startsWith('10.')) {
+    return {
+      country: 'Local',
+      countryCode: 'LC',
+      city: 'Localhost'
+    };
+  }
+
+  const geo = geoip.lookup(ip);
+  
+  if (geo) {
+    return {
+      country: geo.country,
+      countryCode: geo.country,
+      city: geo.city || 'Unknown',
+      region: geo.region || 'Unknown',
+      timezone: geo.timezone || 'Unknown'
+    };
+  }
+
+  return {
+    country: 'Unknown',
+    countryCode: 'UN',
+    city: 'Unknown'
+  };
+};
+
+const updateAnalytics = async (page, countryCode, country) => {
+  try {
+    let analytics = await Analytics.findOne();
+    
+    if (!analytics) {
+      analytics = new Analytics({
+        totalVisits: 0,
+        uniqueVisitors: 0,
+        pageViews: [],
+        countries: [],
+        dailyStats: []
+      });
+    }
+
+    analytics.totalVisits += 1;
+
+    const pageIndex = analytics.pageViews.findIndex(p => p.page === page);
+    if (pageIndex > -1) {
+      analytics.pageViews[pageIndex].count += 1;
+    } else {
+      analytics.pageViews.push({ page, count: 1 });
+    }
+
+    if (country && countryCode) {
+      const countryIndex = analytics.countries.findIndex(c => c.countryCode === countryCode);
+      if (countryIndex > -1) {
+        analytics.countries[countryIndex].count += 1;
+      } else {
+        analytics.countries.push({ country, countryCode, count: 1 });
+      }
+    }
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    const todayStats = analytics.dailyStats.find(d => {
+      const statDate = new Date(d.date);
+      statDate.setHours(0, 0, 0, 0);
+      return statDate.getTime() === today.getTime();
+    });
+
+    if (todayStats) {
+      todayStats.visits += 1;
+    } else {
+      analytics.dailyStats.push({
+        date: today,
+        visits: 1,
+        uniqueVisitors: 0
+      });
+    }
+
+    analytics.lastUpdated = new Date();
+    await analytics.save();
+    
+    return analytics;
+  } catch (error) {
+    console.error('❌ Failed to update analytics:', error.message);
+    return null;
+  }
+};
+
+io.on('connection', (socket) => {
+  const clientIP = socket.handshake.headers['x-forwarded-for']?.split(',')[0] || 
+                   socket.handshake.headers['x-real-ip'] ||
+                   socket.handshake.address;
+  
+  const location = getLocationFromIP(clientIP);
+  
+  console.log('👤 New visitor connected:', socket.id);
+  console.log('📍 Location:', location.country, location.city);
+  
+  activeVisitors.set(socket.id, {
+    ip: clientIP,
+    location: location,
+    connectedAt: new Date().toISOString()
+  });
+  
+  visitorsData.total = activeVisitors.size;
+  visitorsData.countries[location.countryCode] = 
+    (visitorsData.countries[location.countryCode] || 0) + 1;
+  
+  io.emit('visitors-update', {
+    total: visitorsData.total,
+    pages: visitorsData.pages,
+    countries: visitorsData.countries
+  });
+  
+  socket.on('page-visit', async (page) => {
+    console.log(`📄 Page visit: ${page} by ${socket.id} from ${location.country}`);
+    visitorsData.pages[page] = (visitorsData.pages[page] || 0) + 1;
+    
+    await updateAnalytics(page, location.countryCode, location.country);
+    
+    io.emit('visitors-update', {
+      total: visitorsData.total,
+      pages: visitorsData.pages,
+      countries: visitorsData.countries
+    });
+  });
+  
+  socket.on('disconnect', () => {
+    console.log('👋 Visitor disconnected:', socket.id);
+    
+    const visitor = activeVisitors.get(socket.id);
+    if (visitor) {
+      const countryCode = visitor.location.countryCode;
+      if (visitorsData.countries[countryCode]) {
+        visitorsData.countries[countryCode] -= 1;
+        if (visitorsData.countries[countryCode] <= 0) {
+          delete visitorsData.countries[countryCode];
+        }
+      }
+    }
+    
+    activeVisitors.delete(socket.id);
+    visitorsData.total = activeVisitors.size;
+    
+    io.emit('visitors-update', {
+      total: visitorsData.total,
+      pages: visitorsData.pages,
+      countries: visitorsData.countries
+    });
+  });
+});
+
+app.set('io', io);
+
+// ========================================
+// CORS CONFIGURATION
 // ========================================
 const corsOptions = {
   origin: function (origin, callback) {
-    // ✅ IMPORTANT: Allow requests with no origin (Postman, mobile apps, curl)
     if (!origin) {
       return callback(null, true);
     }
@@ -30,19 +331,23 @@ const corsOptions = {
       process.env.CLIENT_URL_PRODUCTION,
     ].filter(Boolean);
 
-    // Check exact matches
     if (allowedOrigins.indexOf(origin) !== -1) {
       return callback(null, true);
     }
 
-    // Allow all Vercel deployments
     if (origin.includes('olivegardens-frontend') && origin.includes('vercel.app')) {
       return callback(null, true);
     }
 
-    // Log blocked origin but allow anyway for development
-    console.warn('⚠️ CORS origin:', origin);
-    callback(null, true); // ✅ Allow all in development
+    // ✅ Block in production
+    if (process.env.NODE_ENV === 'production') {
+      console.warn('🚨 CORS blocked origin:', origin);
+      return callback(new Error('Not allowed by CORS'));
+    }
+
+    // Allow in development
+    console.warn('⚠️ CORS origin (dev):', origin);
+    callback(null, true);
   },
   credentials: true,
   optionsSuccessStatus: 200,
@@ -58,9 +363,6 @@ app.use(cors(corsOptions));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Trust proxy for Railway/Render
-app.set('trust proxy', 1);
-
 // ========================================
 // DATABASE CONNECTION
 // ========================================
@@ -69,32 +371,25 @@ const connectDB = async () => {
     console.log('\n🔍 ========================================');
     console.log('🔍 Environment Variables Check');
     console.log('🔍 ========================================');
-    console.log('NODE_ENV:', process.env.NODE_ENV || '⚠️ not set (defaulting to development)');
-    console.log('PORT:', process.env.PORT || '⚠️ not set (defaulting to 5000)');
-    console.log('MONGODB_URI:', process.env.MONGODB_URI ? '✅ Set (length: ' + process.env.MONGODB_URI.length + ')' : '❌ NOT SET');
-    console.log('JWT_SECRET:', process.env.JWT_SECRET ? '✅ Set' : '❌ NOT SET');
-    console.log('CLOUDINARY_CLOUD_NAME:', process.env.CLOUDINARY_CLOUD_NAME ? '✅ Set' : '⚠️ NOT SET');
-    console.log('CLIENT_URL:', process.env.CLIENT_URL || '⚠️ not set');
+    console.log('NODE_ENV:', process.env.NODE_ENV || '⚠️ not set');
+    console.log('PORT:', process.env.PORT || '⚠️ not set');
+    console.log('MONGODB_URI:', process.env.MONGODB_URI ? '✅ Set' : '❌ NOT SET');
+    console.log('JWT_SECRET:', process.env.JWT_SECRET ? '✅ Set (length: ' + process.env.JWT_SECRET.length + ')' : '❌ NOT SET');
     
-    // Try multiple possible variable names
+    // ✅ Validate JWT_SECRET strength
+    if (process.env.JWT_SECRET && process.env.JWT_SECRET.length < 32) {
+      console.warn('⚠️ WARNING: JWT_SECRET is too short! Minimum 32 characters recommended.');
+    }
+    
     const MONGO_URI = process.env.MONGODB_URI 
       || process.env.MONGO_URI 
       || process.env.DATABASE_URL;
     
     if (!MONGO_URI) {
-      console.error('\n❌ ========================================');
-      console.error('❌ CRITICAL ERROR: MongoDB URI Not Found!');
-      console.error('❌ ========================================');
-      console.error('Please create a .env file in the backend folder with:');
-      console.error('\nMONGODB_URI=mongodb+srv://username:password@cluster.mongodb.net/database');
-      console.error('JWT_SECRET=your_jwt_secret_here');
-      console.error('\nOr set environment variables in Railway/Render dashboard.');
-      console.error('❌ ========================================\n');
       throw new Error('MongoDB URI is not defined!');
     }
     
     console.log('\n🔗 Connecting to MongoDB...');
-    console.log('📍 URI Host:', MONGO_URI.substring(0, 30) + '...');
     
     mongoose.set('strictQuery', false);
     
@@ -105,15 +400,10 @@ const connectDB = async () => {
       socketTimeoutMS: 45000,
     });
     
-    console.log('\n✅ ========================================');
-    console.log('✅ MongoDB Connected Successfully!');
-    console.log('✅ ========================================');
-    console.log(`📊 Database Name: ${conn.connection.name}`);
-    console.log(`🌐 Host: ${conn.connection.host}`);
-    console.log(`⚡ Connection State: Connected (readyState: ${conn.connection.readyState})`);
+    console.log('\n✅ MongoDB Connected Successfully!');
+    console.log(`📊 Database: ${conn.connection.name}`);
     console.log('✅ ========================================\n');
 
-    // Connection events
     mongoose.connection.on('disconnected', () => {
       console.log('⚠️ MongoDB disconnected');
     });
@@ -122,29 +412,21 @@ const connectDB = async () => {
       console.error('❌ MongoDB error:', err.message);
     });
 
-    mongoose.connection.on('reconnected', () => {
-      console.log('✅ MongoDB reconnected');
-    });
-
   } catch (error) {
-    console.error('\n❌ ========================================');
-    console.error('❌ MongoDB Connection FAILED!');
-    console.error('❌ ========================================');
-    console.error('Error:', error.message);
-    console.error('\n🔧 Troubleshooting Steps:');
-    console.error('1. Create .env file in backend folder');
-    console.error('2. Add: MONGODB_URI=your_connection_string');
-    console.error('3. Check MongoDB Atlas Network Access (whitelist 0.0.0.0/0)');
-    console.error('4. Verify cluster is active (not paused)');
-    console.error('5. Check username and password are correct');
-    console.error('6. Make sure database name is in the connection string');
-    console.error('❌ ========================================\n');
+    console.error('\n❌ MongoDB Connection FAILED!', error.message);
     process.exit(1);
   }
 };
 
-// Start DB connection
 connectDB();
+
+// ========================================
+// APPLY RATE LIMITING BEFORE ROUTES
+// ========================================
+app.use('/api/auth/login', loginLimiter);
+app.use('/api/auth/register', strictLimiter);
+app.use('/api/auth/forgot-password', strictLimiter);
+app.use('/api/', apiLimiter);
 
 // ========================================
 // ROUTES
@@ -156,76 +438,70 @@ const contactRoutes = require('./routes/contact');
 const contentRoutes = require('./routes/content');
 const usersRoutes = require('./routes/users');
 
-// Mount routes
 app.use('/api/auth', authRoutes);
 app.use('/api/products', productRoutes);
 app.use('/api/gallery', galleryRoutes);
 app.use('/api/contact', contactRoutes);
 app.use('/api/content', contentRoutes);
 app.use('/api/users', usersRoutes);
-app.use('/api/upload', uploadRoutes); // ✅ Add this
+app.use('/api/upload', uploadRoutes);
+app.use('/api/categories', categoryRoutes);
 
 // ========================================
-// HEALTH CHECK ENDPOINTS
+// ANALYTICS API
+// ========================================
+app.get('/api/analytics', async (req, res) => {
+  try {
+    let analytics = await Analytics.findOne();
+    
+    if (!analytics) {
+      analytics = new Analytics();
+      await analytics.save();
+    }
+
+    res.json({
+      totalVisits: analytics.totalVisits,
+      pageViews: analytics.pageViews.sort((a, b) => b.count - a.count).slice(0, 10),
+      countries: analytics.countries.sort((a, b) => b.count - a.count),
+      dailyStats: analytics.dailyStats.slice(-30),
+      activeNow: visitorsData.total,
+      activeCountries: visitorsData.countries,
+      lastUpdated: analytics.lastUpdated
+    });
+  } catch (error) {
+    console.error('❌ Analytics error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch analytics' });
+  }
+});
+
+// ========================================
+// HEALTH CHECK
 // ========================================
 app.get('/', (req, res) => {
   res.json({ 
     message: '🫒 OliveGardens API',
     status: 'running',
     version: '1.0.0',
-    environment: process.env.NODE_ENV || 'development',
-    database: mongoose.connection.readyState === 1 ? 'Connected ✅' : 'Disconnected ❌',
-    cloudinary: process.env.CLOUDINARY_CLOUD_NAME ? 'Configured ✅' : 'Not configured ⚠️',
+    security: 'Enhanced 🔐',
     timestamp: new Date().toISOString()
   });
 });
 
 app.get('/api/health', (req, res) => {
   const dbState = mongoose.connection.readyState;
-  const dbStatus = {
-    0: 'Disconnected',
-    1: 'Connected',
-    2: 'Connecting',
-    3: 'Disconnecting'
-  };
-
+  
   res.json({ 
     status: dbState === 1 ? 'OK' : 'WARNING',
-    message: 'Server is running',
-    timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'development',
-    server: {
-      port: process.env.PORT || 5000,
-      uptime: process.uptime() + ' seconds'
-    },
-    database: {
-      status: dbStatus[dbState],
-      state: dbState,
-      connected: dbState === 1,
-      name: mongoose.connection.name || 'Not connected',
-      host: mongoose.connection.host || 'Not connected'
-    },
-    cloudinary: {
-      configured: !!process.env.CLOUDINARY_CLOUD_NAME,
-      cloudName: process.env.CLOUDINARY_CLOUD_NAME || 'Not configured'
+    database: dbState === 1 ? 'Connected' : 'Disconnected',
+    activeVisitors: visitorsData.total,
+    security: {
+      helmet: 'enabled',
+      rateLimiting: 'enabled',
+      sanitization: 'enabled',
+      xss: 'enabled'
     }
   });
 });
-
-// Debug endpoint (ONLY in development)
-if (process.env.NODE_ENV !== 'production') {
-  app.get('/api/debug/env', (req, res) => {
-    res.json({
-      hasMongoURI: !!process.env.MONGODB_URI,
-      mongoURILength: process.env.MONGODB_URI?.length || 0,
-      hasJWT: !!process.env.JWT_SECRET,
-      hasCloudinary: !!process.env.CLOUDINARY_CLOUD_NAME,
-      nodeEnv: process.env.NODE_ENV || 'not set',
-      port: process.env.PORT || '5000',
-      clientURL: process.env.CLIENT_URL || 'not set'
-    });
-  });
-}
 
 // ========================================
 // 404 HANDLER
@@ -234,9 +510,7 @@ app.use((req, res) => {
   res.status(404).json({ 
     success: false,
     message: 'Route not found',
-    path: req.originalUrl,
-    method: req.method,
-    timestamp: new Date().toISOString()
+    path: req.originalUrl
   });
 });
 
@@ -244,19 +518,8 @@ app.use((req, res) => {
 // ERROR HANDLER
 // ========================================
 app.use((err, req, res, next) => {
-  console.error('❌ Error caught:', err.message);
+  console.error('❌ Error:', err.message);
   
-  // Handle Multer errors
-  if (err.name === 'MulterError') {
-    if (err.code === 'LIMIT_FILE_SIZE') {
-      return res.status(400).json({
-        success: false,
-        message: 'File size too large. Maximum size is 5MB'
-      });
-    }
-  }
-
-  // Handle Mongoose validation errors
   if (err.name === 'ValidationError') {
     return res.status(400).json({
       success: false,
@@ -265,18 +528,16 @@ app.use((err, req, res, next) => {
     });
   }
 
-  // Handle MongoDB duplicate key errors
   if (err.code === 11000) {
     return res.status(400).json({
       success: false,
-      message: 'Duplicate entry. This item already exists.'
+      message: 'Duplicate entry'
     });
   }
   
   res.status(err.status || 500).json({ 
     success: false,
-    message: err.message || 'Internal Server Error',
-    ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
+    message: process.env.NODE_ENV === 'production' ? 'Internal Server Error' : err.message
   });
 });
 
@@ -285,61 +546,42 @@ app.use((err, req, res, next) => {
 // ========================================
 const PORT = process.env.PORT || 5000;
 
-const server = app.listen(PORT, '0.0.0.0', () => {
+server.listen(PORT, '0.0.0.0', () => {
   console.log('\n🚀 ========================================');
-  console.log('🚀 SERVER STARTED SUCCESSFULLY');
+  console.log('🚀 SERVER STARTED - SECURE MODE');
   console.log('🚀 ========================================');
-  console.log(`🌐 Server URL: http://localhost:${PORT}`);
-  console.log(`🔗 Health Check: http://localhost:${PORT}/api/health`);
-  console.log(`📊 Debug Info: http://localhost:${PORT}/api/debug/env`);
-  console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`☁️  Cloudinary: ${process.env.CLOUDINARY_CLOUD_NAME || 'Not configured'}`);
-  console.log(`💾 Database: ${mongoose.connection.readyState === 1 ? 'Connected ✅' : 'Connecting...'}`);
+  console.log(`🌐 Port: ${PORT}`);
+  console.log(`🔐 Security: Enhanced`);
+  console.log(`🛡️  Helmet: Enabled`);
+  console.log(`⏱️  Rate Limiting: Enabled`);
+  console.log(`🧹 Sanitization: Enabled`);
   console.log('🚀 ========================================\n');
-});
-
-// Handle server errors
-server.on('error', (err) => {
-  if (err.code === 'EADDRINUSE') {
-    console.error(`❌ Port ${PORT} is already in use!`);
-    console.error('Try: netstat -ano | findstr :5000');
-    console.error('Then: taskkill /PID <PID> /F');
-    process.exit(1);
-  } else {
-    console.error('❌ Server Error:', err);
-    process.exit(1);
-  }
 });
 
 // ========================================
 // GRACEFUL SHUTDOWN
 // ========================================
 const shutdown = (signal) => {
-  console.log(`\n👋 ${signal} received. Shutting down gracefully...`);
+  console.log(`\n👋 ${signal} - Shutting down gracefully...`);
+  
+  io.close(() => console.log('✅ Socket.IO closed'));
+  
   server.close(() => {
-    console.log('✅ HTTP server closed');
     mongoose.connection.close(false, () => {
-      console.log('✅ MongoDB connection closed');
+      console.log('✅ Shutdown complete');
       process.exit(0);
     });
   });
 
-  // Force shutdown after 10 seconds
   setTimeout(() => {
-    console.error('⚠️ Forced shutdown after timeout');
+    console.error('⚠️ Forced shutdown');
     process.exit(1);
   }, 10000);
 };
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
-
 process.on('unhandledRejection', (err) => {
   console.error('❌ Unhandled Rejection:', err);
   server.close(() => process.exit(1));
-});
-
-process.on('uncaughtException', (err) => {
-  console.error('❌ Uncaught Exception:', err);
-  process.exit(1);
 });
