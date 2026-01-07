@@ -30,10 +30,12 @@ const productSchema = new mongoose.Schema({
       type: String
     }
   },
+  // ✅ Changed: Dynamic category (no enum)
   category: {
     type: String,
-    enum: ['pickled-olives', 'olive-oil', 'olive-paste', 'stuffed-olives', 'other'],
-    required: [true, 'Category is required']
+    required: [true, 'Category is required'],
+    trim: true,
+    lowercase: true
   },
   // Cloudinary URLs with public IDs
   images: [{
@@ -102,13 +104,13 @@ const productSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  // ✅ Changed: Optional createdBy
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    required: true
+    ref: 'User'
   }
 }, {
-  timestamps: true // This creates createdAt and updatedAt automatically
+  timestamps: true
 });
 
 // Indexes for better performance
@@ -124,5 +126,25 @@ productSchema.virtual('mainImage').get(function() {
 // Ensure virtuals are included in JSON
 productSchema.set('toJSON', { virtuals: true });
 productSchema.set('toObject', { virtuals: true });
+
+// ✅ Validation: Check if category exists in Categories collection
+productSchema.pre('save', async function(next) {
+  if (this.isModified('category')) {
+    try {
+      const Category = mongoose.model('Category');
+      const categoryExists = await Category.findOne({ 
+        value: this.category,
+        isActive: true 
+      });
+      
+      if (!categoryExists) {
+        throw new Error(`Category '${this.category}' does not exist or is inactive`);
+      }
+    } catch (error) {
+      return next(error);
+    }
+  }
+  next();
+});
 
 module.exports = mongoose.model('Product', productSchema);
