@@ -95,15 +95,19 @@ app.use((req, res, next) => {
 app.disable('x-powered-by');
 
 // ✅ 2. Rate Limiting - Prevent Brute Force
+// ✅ 2. Rate Limiting - Development-friendly
+const isDevelopment = process.env.NODE_ENV !== 'production';
+
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 20, // 20 attempts (increased from 5 for development)
+  max: isDevelopment ? 100 : 20, // ✅ 100 في Development, 20 في Production
   message: {
     success: false,
     message: 'Too many login attempts from this IP. Please try again after 15 minutes.'
   },
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) => isDevelopment, // ✅ Skip تماماً في Development
   handler: (req, res) => {
     console.error(`🚨 Rate limit exceeded - IP: ${req.ip} - Route: ${req.path}`);
     res.status(429).json({
@@ -117,21 +121,27 @@ const loginLimiter = rateLimit({
 // General API Rate Limiter
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // 100 requests
+  max: isDevelopment ? 10000 : 100, // ✅ 10000 في Development
   message: {
     success: false,
     message: 'Too many requests from this IP. Please try again later.'
+  },
+  skip: (req) => {
+    // ✅ Skip للـ Health checks وفي Development
+    const skipPaths = ['/api/health', '/', '/api/analytics'];
+    return isDevelopment || skipPaths.includes(req.path);
   }
 });
 
 // Strict limiter for sensitive operations
 const strictLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hour
-  max: 10, // 10 attempts
+  max: isDevelopment ? 100 : 10, // ✅ 100 في Development
   message: {
     success: false,
     message: 'Too many attempts. Please try again in 1 hour.'
-  }
+  },
+  skip: (req) => isDevelopment // ✅ Skip في Development
 });
 
 // ✅ 3. Data Sanitization against NoSQL Injection
