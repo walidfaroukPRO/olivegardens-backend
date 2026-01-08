@@ -2,80 +2,125 @@ const express = require('express');
 const router = express.Router();
 const multer = require('multer');
 const cloudinary = require('cloudinary').v2;
-const { authenticateToken, isAdmin } = require('../middleware/auth');
+const { CloudinaryStorage } = require('multer-storage-cloudinary');
+const { protect, admin } = require('../middleware/auth');
 
-// Configure Cloudinary
+// ✅ Configure Cloudinary
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
-// Multer memory storage
-const storage = multer.memoryStorage();
-const upload = multer({ 
-  storage,
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+// ✅ Configure Multer Storage for Cloudinary
+const storage = new CloudinaryStorage({
+  cloudinary: cloudinary,
+  params: {
+    folder: 'olivegardens/categories', // Folder in Cloudinary
+    allowed_formats: ['jpg', 'jpeg', 'png', 'gif', 'webp'],
+    transformation: [
+      { width: 800, height: 600, crop: 'limit' }, // Max dimensions
+      { quality: 'auto:good' } // Auto quality optimization
+    ]
+  }
+});
+
+// ✅ Multer upload instance
+const upload = multer({
+  storage: storage,
+  limits: {
+    fileSize: 5 * 1024 * 1024 // 5MB limit
+  },
   fileFilter: (req, file, cb) => {
+    // Check file type
     if (file.mimetype.startsWith('image/')) {
       cb(null, true);
     } else {
-      cb(new Error('Only image files are allowed!'), false);
+      cb(new Error('Only image files are allowed'), false);
     }
   }
 });
 
-// Upload to Cloudinary
-router.post('/', authenticateToken, isAdmin, upload.single('image'), async (req, res) => {
+// ✅ Route: Upload single category image
+router.post('/category-image', protect, admin, upload.single('image'), async (req, res) => {
   try {
     if (!req.file) {
-      return res.status(400).json({ message: 'No image provided' });
+      return res.status(400).json({ message: 'No image file provided' });
     }
 
-    // Upload to Cloudinary using stream
-    const result = await new Promise((resolve, reject) => {
-      const uploadStream = cloudinary.uploader.upload_stream(
-        {
-          folder: 'olivegardens',
-          resource_type: 'auto',
-          transformation: [
-            { width: 1920, height: 1080, crop: 'limit' },
-            { quality: 'auto' }
-          ]
-        },
-        (error, result) => {
-          if (error) reject(error);
-          else resolve(result);
-        }
-      );
-      
-      uploadStream.end(req.file.buffer);
+    // Cloudinary automatically uploads via multer-storage-cloudinary
+    const imageUrl = req.file.path; // Cloudinary URL
+    const publicId = req.file.filename; // Cloudinary public_id
+
+    console.log('✅ Category image uploaded:', {
+      url: imageUrl,
+      publicId: publicId
     });
 
-    res.json({
-      success: true,
+    res.status(200).json({
       message: 'Image uploaded successfully',
-      url: result.secure_url,
-      public_id: result.public_id
+      url: imageUrl,
+      publicId: publicId
     });
+
   } catch (error) {
-    console.error('Upload error:', error);
+    console.error('❌ Upload error:', error);
     res.status(500).json({ 
-      success: false,
-      message: 'Failed to upload image', 
+      message: 'Failed to upload image',
       error: error.message 
     });
   }
 });
 
-// Delete from Cloudinary (optional)
-router.delete('/:publicId', authenticateToken, isAdmin, async (req, res) => {
+// ✅ Route: Delete category image from Cloudinary
+router.delete('/category-image/:publicId', protect, admin, async (req, res) => {
   try {
-    const { publicId } = req.params;
-    await cloudinary.uploader.destroy(publicId);
-    res.json({ success: true, message: 'Image deleted successfully' });
+    const publicId = req.params.publicId;
+    
+    // Delete from Cloudinary
+    const result = await cloudinary.uploader.destroy(publicId);
+    
+    console.log('🗑️ Category image deleted:', result);
+    
+    res.status(200).json({
+      message: 'Image deleted successfully',
+      result: result
+    });
+
   } catch (error) {
-    res.status(500).json({ message: 'Failed to delete image', error: error.message });
+    console.error('❌ Delete error:', error);
+    res.status(500).json({ 
+      message: 'Failed to delete image',
+      error: error.message 
+    });
+  }
+});
+
+// ✅ Route: Upload multiple category images (if needed)
+router.post('/category-images', protect, admin, upload.array('images', 5), async (req, res) => {
+  try {
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ message: 'No image files provided' });
+    }
+
+    const uploadedImages = req.files.map(file => ({
+      url: file.path,
+      publicId: file.filename
+    }));
+
+    console.log('✅ Multiple category images uploaded:', uploadedImages.length);
+
+    res.status(200).json({
+      message: 'Images uploaded successfully',
+      images: uploadedImages
+    });
+
+  } catch (error) {
+    console.error('❌ Upload error:', error);
+    res.status(500).json({ 
+      message: 'Failed to upload images',
+      error: error.message 
+    });
   }
 });
 
